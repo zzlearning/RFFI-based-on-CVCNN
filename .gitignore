@@ -1,3 +1,6 @@
 logs
-/configs/__pycache__
+configs/__pycache__
 work_dir/
+checkpoints/
+!dataset/RFFIDataset.py
+dataset/

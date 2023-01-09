@@ -8,14 +8,65 @@ import time
 import torch
 import torch.nn as nn
 from dataset.RFFIDataset import RFFIDataset
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader,Dataset
 from network.STCVCNN import STCVCNN
 from utils.strategy import step_lr, accuracy
-from utils.plot import draw_curve, plot_confusion_matrix
+from utils.plot import draw_curve
+from utils.centerloss import CenterLoss
+from utils.hard_triplet_loss import HardTripletLoss
+from test import predict_unkonwn_sig
+
+from sklearn.model_selection import train_test_split
+import numpy as np
+
+device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# def TrainDataset(num):
+#     x = np.load(f"D:/RFFI-based-on-CVCNN/codes/FS-SEI/FS-SEI_4800/Dataset/X_train_{num}Class.npy")
+#     y = np.load(f"D:/RFFI-based-on-CVCNN/codes/FS-SEI/FS-SEI_4800/Dataset/Y_train_{num}Class.npy")
+
+#     x=(x-x.min())/(x.max()-x.min())
+#     x=x[:,:,0]+x[:,:,1]*1j
+#     x=x.astype(np.complex64)
+#     x=np.expand_dims(x,axis=(1,3))
+#     # print(type(x[0,0,0,0]))
+#     y = y.astype(np.uint8)# 8bit数0-255
+#     X_train, X_val, Y_train, Y_val = train_test_split(x, y, test_size = 0.1, random_state= 30)
+#     return X_train, X_val, Y_train, Y_val
+
+# class FewShotDataset(Dataset):
+#     def __init__(self,datas,labels):
+#         self.datas=datas
+#         self.labels=labels
+
+#     def __getitem__(self, index):
+#         data=self.datas[index]
+#         label=self.labels[index]
+#         return data ,label
+
+#     def __len__(self):
+#         return len(self.labels)
+       
 
 def train(cfgs):
-    trainDataset=RFFIDataset(txt_path=cfgs.train_txt_path)
-    validDataset=RFFIDataset(txt_path=cfgs.valid_txt_path)
+    trainDataset=RFFIDataset(txt_path=cfgs.train_txt_path,
+                            norm_form=cfgs.norm_form,
+                            offset=cfgs.offset,
+                            bytes_of_one_sample=cfgs.bytes_of_one_sample
+                            )
+    validDataset=RFFIDataset(txt_path=cfgs.valid_txt_path,
+                            norm_form=cfgs.norm_form,
+                            offset=cfgs.offset,
+                            bytes_of_one_sample=cfgs.bytes_of_one_sample
+                            )
+
+    # X_train, X_val, Y_train, Y_val=TrainDataset(90)
+    # trainDataset=FewShotDataset(X_train,Y_train)
+    # validDataset=FewShotDataset(X_val,Y_val)
+
+
+
+
     train_loader=DataLoader( trainDataset,
                             batch_size=cfgs.batch_size,
                             num_workers=cfgs.num_workers,
@@ -31,9 +82,9 @@ def train(cfgs):
                             pin_memory=True
                             )    
 
-    model = eval(f"{cfgs.model}")(num_classes=len(cfgs.classes), runs=len(cfgs.runs)) 
-    model.to(device, non_blocking=True)
-    print(model)
+    model = eval(f"{cfgs.model}")(num_classes=len(cfgs.classes), runs=len(cfgs.runs)).to(device, non_blocking=True)
+    # model=eval(f"{cfgs.model}")(num_classes=90, runs=len(cfgs.runs)).to(device, non_blocking=True)
+    # print(model)
     if cfgs.resume:
         model.load(cfgs.resume_path)
 
@@ -46,9 +97,10 @@ def train(cfgs):
             f.write(f"{name}: {value} \n")
         f.write("\n\n")
 
-    criterion = nn.CrossEntropyLoss().to(device, non_blocking=True)  # 交叉熵损失
-    optimizer=torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), 
-                                    lr=cfgs.lr, betas=(0.9, 0.999), weight_decay=0.0002)
+    criterion1 = nn.CrossEntropyLoss().to(device, non_blocking=True)  # 交叉熵损失
+    criterion2=CenterLoss(num_classes=len(cfgs.classes),feat_dim=1024,use_gpu=True)
+    criterion3=HardTripletLoss(margin=5).to(device, non_blocking=True)
+   
 
     # trian
     sum = 0
@@ -60,28 +112,38 @@ def train(cfgs):
     train_draw_loss=[]
     val_draw_loss=[]
     lr = cfgs.lr
+    lambda_T = 0.01
+    lambda_C = 0.01
+
     for epoch in range(cfgs.epoches):
         ep_start = time.time()
-        print('epoch:',epoch)
-        model.train()
+        print('epoch:',epoch+1)
         top1_sum=0
         epoch_loss=0
+        # 优化器
+        lr = step_lr(epoch, lr)
+        optimizer=torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), 
+                                    lr=cfgs.lr, betas=(0.9, 0.999), weight_decay=0.0002)
+        # optimizer=torch.optim.SGD(lr=cfgs.lr,params=model.parameters())
+        model.train()
+        sum = 0
+        train_loss_sum = 0
+        train_top1_sum = 0
         for i, (signal, label) in enumerate(train_loader):
             input = signal.to(device, non_blocking=True)
             target = label.to(device, non_blocking=True).long()
-
-            output=model(input)     # 前向推理
-            loss=criterion(output,target)# 计算损失
+            y_features,y_classifier=model(input)     # 前向推理
+            loss=criterion1(y_classifier,target)+lambda_C*criterion2(y_features,target)+lambda_T*criterion3(y_features,target)# 计算损失
             optimizer.zero_grad()# 优化器梯度清空
             loss.backward()# 反向传播
             optimizer.step() # 更新参数
             
-            top1=accuracy(output.data,target.data,topk=(1,))# 计算top1分类准确率
-            train_loss_sum += loss.data.cpu().numpy()
+            top1=accuracy(y_classifier.data,target.data,topk=(1,))# 计算top1分类准确率
+            train_loss_sum += loss.item()
             train_top1_sum += top1[0]
             sum += 1
             top1_sum += top1[0]
-            epoch_loss+=loss.data.cpu().numpy()
+            epoch_loss+=loss.item()
 
             if (i+1) % cfgs.iter_smooth == 0:
                 print('Epoch [%d/%d], Iter [%d/%d], lr: %f, Loss: %.4f, top1: %.4f'
@@ -101,21 +163,22 @@ def train(cfgs):
         epoch_time = (time.time() - ep_start) / 60.
         
         # valid
-        if epoch % cfgs.valid_freq == 0 and epoch < cfgs.num_epochs:
+        if epoch % cfgs.valid_freq == 0 and epoch < cfgs.epoches:
             val_time_start = time.time()
             sum=0
             val_loss_sum = 0
             val_top1_sum = 0
             model.eval()
-            for i,(signal, label) in enumerate(valid_loader):
-                input_val = signal.to(device, non_blocking=True)
-                target_val = label.to(device, non_blocking=True).long()
-                output_val = model(input_val)
-                loss = criterion(output_val, target_val)
-                top1_val = accuracy(output_val.data, target_val.data, topk=(1,))
-                sum+=1
-                val_loss_sum += loss.data.cpu().numpy()
-                val_top1_sum += top1_val[0]
+            with torch.no_grad():
+                for i,(signal, label) in enumerate(valid_loader):
+                    input_val = signal.to(device, non_blocking=True)
+                    target_val = label.to(device, non_blocking=True).long()
+                    val_y_features,val_y_classifier = model(input_val)
+                    loss=criterion1(val_y_classifier,target_val)+lambda_C*criterion2(val_y_features,target_val)+lambda_T*criterion3(val_y_features,target_val)# 计算损失
+                    top1_val = accuracy(val_y_classifier.data, target_val.data, topk=(1,))
+                    sum+=1
+                    val_loss_sum += loss.data.cpu().numpy()
+                    val_top1_sum += top1_val[0]
             val_loss = val_loss_sum / sum
             val_top1 = val_top1_sum / sum
             val_draw_acc.append(val_top1.item())
@@ -134,7 +197,8 @@ def train(cfgs):
             with open(f'./work_dir/{cfgs.checkpoint_name}/Train_log.txt', 'a+') as f:
                     f.write('Epoch [%d/%d], Val_Loss: %.4f, Val_top1: %.4f, val_time: %.4f s, max_val_acc: %4f\n'
                   %(epoch+1, cfgs.epoches, val_loss, val_top1, val_time*60, max_val_acc))
-    draw_curve(train_draw_acc, val_draw_acc, f'./work_dir/{cfgs.checkpoint_name}/Train_Acc_{int(max_val_acc)}.png')
+    draw_curve(train_draw_acc, val_draw_acc, f'./work_dir/{cfgs.checkpoint_name}/Train_Acc_{int(max_val_acc)}.png',acc_or_loss='acc')
+    draw_curve(train_draw_loss,val_draw_loss,f'./work_dir/{cfgs.checkpoint_name}/Train_Loss.png',acc_or_loss='loss')
     with open(f'./work_dir/{cfgs.checkpoint_name}/Train_log.txt', 'a+') as f:
         f.write('-'*40+"End of Train"+'-'*40+'\n')
 
@@ -144,7 +208,7 @@ if __name__=='__main__':
     parser = argparse.ArgumentParser(description=('Train a model for RFFI dataset.'))
     parser.add_argument(
         '--config', 
-        default=r'configs/configs01.py',
+        default=r'configs/configs02.py',
         type=str,
         help='Configuration file Path'
     )
@@ -161,11 +225,11 @@ if __name__=='__main__':
     shutil.copy(args.config, f'./work_dir/{cfgs.checkpoint_name}/Train_configs.py')
 
     # GPU指定
-    os.environ['CUDA_VISIBLE_DEVICES'] = cfgs.gup_id
+    # os.environ['CUDA_VISIBLE_DEVICES'] = cfgs.gup_id
     device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 训练 & 验证
     train(cfgs)
 
     # 测试
-    #    predict_unkonwn_sig(cfgs)
+    predict_unkonwn_sig(cfgs)

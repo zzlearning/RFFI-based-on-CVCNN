@@ -24,12 +24,11 @@
    <0> | JunJie Ren |   v1.0    | 2020/06/14 | 修改学习率调整策略，修复bug
 # ------------------------------------------------------------------------
 '''
-
-def step_lr(epoch, lr):
+def step_lr(epoch, lr,T=10):
     learning_rate = lr
     if epoch < 5:
         learning_rate = lr
-    elif epoch % 4 == 0:
+    elif epoch % T == 0:
         learning_rate = lr * 0.5
     return learning_rate
 
@@ -40,17 +39,27 @@ def accuracy(output, target, topk=(1, 5)):
         计算top k分类准确率 
     Args:
         output: 一个batch的预测标签
-        target：一个batch的真实标签
+        target: 一个batch的真实标签
     """
     maxk = max(topk)
     batch_size = target.size(0)
 
     _, pred = output.topk(maxk, 1, True, True)
-    pred = pred.t()
-    correct = pred.eq(target.view(1, -1).expand_as(pred))
+    pred = pred.t()  # 转置
+    correct = pred.eq(target.view(1, -1).expand_as(pred))  # correct 为布尔矩阵
 
     res = []
     for k in topk:
         correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
         res.append(correct_k.mul_(100.0 / batch_size))
-    return res
+    return res   # 返回一个小于100的数
+
+if __name__=='__main__':
+    import torch
+
+    output=torch.Tensor([[0.3146, 0.3284, 0.3284],
+        [0.3146, 0.3571, 0.3284],
+        [0.3146, 0.3571, 0.3284],
+        [0.3146, 0.3571, 0.3284]])
+    target=torch.Tensor([2,1,1,1])
+    print(accuracy(output.data,target.data,topk=(1,)))

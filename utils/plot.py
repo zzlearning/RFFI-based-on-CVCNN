@@ -36,8 +36,9 @@ font1 = {'family': 'Times New Roman',
         }
 
 
-def draw_curve(y1, y2=None, save_path="acc"):
+def draw_curve(y1, y2=None, save_path="acc",acc_or_loss='acc'):
     ''' 绘制训练收敛曲线 '''
+    plt.figure()
     x1 = [i for i in range(len(y1))]
     # y1 = smooth(y1, weight=0.95)
     plt.plot(x1, y1, color='b', label='train')
@@ -47,7 +48,10 @@ def draw_curve(y1, y2=None, save_path="acc"):
         plt.plot(x2, y2, color='coral', label='validation')
     plt.legend(loc='lower right', prop=font1, frameon=False)
     plt.xlabel('Epoch')
-    plt.ylabel('Accuracy')
+    if acc_or_loss=='acc':
+        plt.ylabel('Accuracy')
+    elif acc_or_loss=='loss':
+        plt.ylabel('Loss')
     plt.savefig(save_path)
 
 

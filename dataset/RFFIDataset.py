@@ -13,13 +13,22 @@ import sys
 import importlib
 
 class RFFIDataset(Dataset):
-    def __init__(self,txt_path):
+    def __init__(self,txt_path,norm_form=None,offset=0,bytes_of_one_sample=16):
         self.labels,self.sigs_path,self.start_poses,self.sigs_len=parse_txt(txt_path)
-
+        self.norm_form=norm_form
+        self.bytes_of_one_sample=bytes_of_one_sample
+        self.offset=offset
     def __getitem__(self,index):
         label=self.labels[index]
-        sig=get_sig(self.sigs_path[index],self.start_poses[index],self.sigs_len[index])
+        sig=get_sig(self.sigs_path[index],self.start_poses[index],self.sigs_len[index],
+                    offset=self.offset,
+                    bytes_of_one_sample=self.bytes_of_one_sample)
 
+        # 需要归一化/标准化
+        if self.norm_form is not None:
+            sig=sig_norm(sig,self.norm_form)
+
+        
         return sig,label
 
     def __len__(self):
@@ -73,21 +82,54 @@ def get_sig(sig_path,start_pos=0,sig_len=100,offset=0,bytes_of_one_sample=16):
         start_pos: int, 信号开始位置
         sig_len: int, 信号长度
     Return:
-        sig: np.ndrray,dtype=np.complex128, 信号序列
+        sig: np.ndrray,dtype=np.complex64, 信号序列
     """
     # 判断采样序列是否溢出
     total_sample_point_capacity=get_sigmf_data_len(sig_path,offset,bytes_of_one_sample)
     if start_pos+sig_len>total_sample_point_capacity:
+        print(start_pos,sig_len,total_sample_point_capacity,sig_path)
         raise Exception('序列划分溢出')
 
     with open(sig_path,'rb') as f:
-        f.seek(offset+start_pos*16,0)
-        byte_stream = f.read(16*sig_len) #成对(双通道)读取数据
-        sig=np.frombuffer(byte_stream,dtype=np.complex128,count=-1,offset=0).reshape(1,-1)
+        f.seek(offset+start_pos*bytes_of_one_sample,0)
+        byte_stream = f.read(bytes_of_one_sample*sig_len) #成对(双通道)读取数据
+        sig=np.frombuffer(byte_stream,dtype=np.complex128,count=-1,offset=0).astype(np.complex64).reshape(1,-1,1)
     return sig      # shape=(sig_len,)
 
+def sig_norm(sig,norm_form='maxmin'):
+    """ 
+    Function:
+        将复数信号sig进行归一化/标准化处理
+    Arguments:
+        sig: ndarry, 复数信号
+        norm_form: str, 归一化方式,可选maxmin、z-score
+    Return:
+        sig: np.ndrray,dtype=np.complex64, 信号序列
+     """
+    if norm_form not in ['maxmin','z-score']:
+        raise Exception('标准化出错')
+    eps=1e-5
+    if norm_form=='maxmin':
+        real_min=sig.real.min()
+        real_max=sig.real.max()
+        sig.real=(sig.real-real_min)/(real_max-real_min+eps)
 
+        imag_min=sig.imag.min()
+        imag_max=sig.imag.max()
+        sig.imag=(sig.imag-imag_min)/(imag_max-imag_min+eps)
 
+        return sig
+    elif norm_form=='z-score':
+        real_mean=sig.real.mean()
+        real_std=sig.real.std()
+        sig.real=(sig.real-real_mean)/(real_std+eps)
+
+        imag_mean=sig.imag.mean()
+        imag_std=sig.imag.std()
+        sig.imag=(sig.imag-imag_mean)/(imag_std+eps)
+
+        return sig
+        
 
 def devide_dataset( data_path,
                     save_path='./dataset',
@@ -98,7 +140,10 @@ def devide_dataset( data_path,
                     continuous=False,
                     trainset_ratio=0.5,
                     validset_ratio=0.25,
-                    testset_ratio=0.25):
+                    testset_ratio=0.25,
+                    bytes_of_one_sample=16,
+                    offset=0,
+                    sliding_window=0):
     """ 
     Function:
         划分数据集,分为训练集,验证集,和测试集,以索引形式保存在txt文件中,索引包含数据标签,数据路径,开始位置,采样长度
@@ -132,7 +177,7 @@ def devide_dataset( data_path,
     for file in os.listdir(data_path):
         # file name示例:WiFi_air_X310_3123D7B_2ft_run1.sigmf-data
         extension=os.path.splitext(file)[1]
-        file_class=os.path.splitext(file)[0].split('_')[3]
+        file_class=os.path.splitext(file)[0].split('_')[5]
         file_run=os.path.splitext(file)[0].split('_')[-1]
         if file_class in classes:
             label=np.where(np.array(classes)==file_class)[0][0]
@@ -140,7 +185,7 @@ def devide_dataset( data_path,
             continue
         if (extension=='.sigmf-data')&(file_class in classes)&(file_run in runs):
             sigmf_path=os.path.join(data_path,file)
-            crop_num=get_sigmf_data_len(sigmf_path,bytes_of_one_sample=16)//sig_len
+            crop_num=get_sigmf_data_len(sigmf_path,offset,bytes_of_one_sample)//sig_len-1
 
             if not continuous:
                 # 训练集
@@ -153,15 +198,32 @@ def devide_dataset( data_path,
                 test_idx=random.sample(residue_idx,int(crop_num*testset_ratio))
 
             if continuous:
-                raise Exception('还没写')
+                train_idx=[i for i in range(int(crop_num*trainset_ratio))]
+                valid_idx=[i for i in range(int(crop_num*trainset_ratio),int(crop_num*(trainset_ratio+validset_ratio)))]
+                test_idx=[i for i in range(int(crop_num*(trainset_ratio+validset_ratio)),int(crop_num*(trainset_ratio+validset_ratio+testset_ratio)))]
+                random.shuffle(train_idx)
+                random.shuffle(valid_idx)
+                random.shuffle(test_idx)
 
             # 保存到txt
-            for idx in train_idx:
-                train_txt.write(f"{label},{sigmf_path},{idx*sig_len},{sig_len}\n")
-            for idx in valid_idx:
-                valid_txt.write(f"{label},{sigmf_path},{idx*sig_len},{sig_len}\n")
-            for idx in test_idx:
-                test_txt.write(f"{label},{sigmf_path},{idx*sig_len},{sig_len}\n")
+            if sliding_window!=0:
+                for idx in train_idx:
+                    for window in range(int(1/sliding_window)):
+                        train_txt.write(f"{label},{sigmf_path},{idx*sig_len+int(sig_len*sliding_window*window)},{sig_len}\n")
+                for idx in valid_idx:
+                    for window in range(int(1/sliding_window)):
+                        valid_txt.write(f"{label},{sigmf_path},{idx*sig_len+int(sig_len*sliding_window*window)},{sig_len}\n")
+                for idx in test_idx:
+                    for window in range(int(1/sliding_window)):
+                        test_txt.write(f"{label},{sigmf_path},{idx*sig_len+int(sig_len*sliding_window*window)},{sig_len}\n")
+
+            else:
+                for idx in train_idx:
+                    train_txt.write(f"{label},{sigmf_path},{idx*sig_len},{sig_len}\n")
+                for idx in valid_idx:
+                    valid_txt.write(f"{label},{sigmf_path},{idx*sig_len},{sig_len}\n")
+                for idx in test_idx:
+                    test_txt.write(f"{label},{sigmf_path},{idx*sig_len},{sig_len}\n")
 
 # 划分数据集
 if __name__ == '__main__':
@@ -170,7 +232,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--config', 
-        default=r'./configs/configs01.py',
+        default=r'./configs/configs02.py',
         type=str,
         help='Configuration file Path'
     )
@@ -184,22 +246,26 @@ if __name__ == '__main__':
     # sig=get_sig(sig_path=cfgs.oneFilePath,start_pos=0,sig_len=20)
     # print(sig)
     # 划分数据集
-    devide_dataset( 
-        data_path=cfgs.data_path,
-        save_path=cfgs.save_path,
-        dataset_name=cfgs.dataset_name,
-        sig_len=cfgs.sig_len,
-        classes=cfgs.classes,
-        runs=cfgs.runs,
-        continuous=cfgs.continuous,
-        trainset_ratio=cfgs.trainset_ratio,
-        validset_ratio=cfgs.validset_ratio,
-        testset_ratio= cfgs.testset_ratio
-    )
+    # devide_dataset( 
+    #     data_path=cfgs.data_path,
+    #     save_path=cfgs.save_path,
+    #     dataset_name=cfgs.dataset_name,
+    #     sig_len=cfgs.sig_len,
+    #     classes=cfgs.classes,
+    #     runs=cfgs.runs,
+    #     continuous=cfgs.continuous,
+    #     trainset_ratio=cfgs.trainset_ratio,
+    #     validset_ratio=cfgs.validset_ratio,
+    #     testset_ratio= cfgs.testset_ratio,
+    #     bytes_of_one_sample=cfgs.bytes_of_one_sample,
+    #     offset=cfgs.offset,
+    #     sliding_window=cfgs.sliding_window
+    # )
 
     trainDataset=RFFIDataset(txt_path=cfgs.train_txt_path)
     # validDataset=RFFIDataset(txt_path=cfgs.valid_txt_path)
     # testDataset=RFFIDataset(txt_path=cfgs.test_txt_path)
+
 
     train_loader=DataLoader( trainDataset,
                             batch_size=4,
@@ -219,5 +285,9 @@ if __name__ == '__main__':
     #                         shuffle=True,
     #                         drop_last=False
     #                         )
-    for (data,label),i in zip(train_loader,range(5)):
-        print(data.shape,label)
+    import matplotlib.pyplot as plt
+    for (data,label),i in zip(train_loader,range(8)):
+        print(data[0,0,:10,0],label)
+        # plt.scatter(data.real[0,0,:,0],data.imag[0,0,:,0])
+        # plt.title(label[0])
+        # plt.show()
