@@ -246,21 +246,21 @@ if __name__ == '__main__':
     # sig=get_sig(sig_path=cfgs.oneFilePath,start_pos=0,sig_len=20)
     # print(sig)
     # 划分数据集
-    # devide_dataset( 
-    #     data_path=cfgs.data_path,
-    #     save_path=cfgs.save_path,
-    #     dataset_name=cfgs.dataset_name,
-    #     sig_len=cfgs.sig_len,
-    #     classes=cfgs.classes,
-    #     runs=cfgs.runs,
-    #     continuous=cfgs.continuous,
-    #     trainset_ratio=cfgs.trainset_ratio,
-    #     validset_ratio=cfgs.validset_ratio,
-    #     testset_ratio= cfgs.testset_ratio,
-    #     bytes_of_one_sample=cfgs.bytes_of_one_sample,
-    #     offset=cfgs.offset,
-    #     sliding_window=cfgs.sliding_window
-    # )
+    devide_dataset( 
+        data_path=cfgs.data_path,
+        save_path=cfgs.save_path,
+        dataset_name=cfgs.dataset_name,
+        sig_len=cfgs.sig_len,
+        classes=cfgs.classes,
+        runs=cfgs.runs,
+        continuous=cfgs.continuous,
+        trainset_ratio=cfgs.trainset_ratio,
+        validset_ratio=cfgs.validset_ratio,
+        testset_ratio= cfgs.testset_ratio,
+        bytes_of_one_sample=cfgs.bytes_of_one_sample,
+        offset=cfgs.offset,
+        sliding_window=cfgs.sliding_window
+    )
 
     trainDataset=RFFIDataset(txt_path=cfgs.train_txt_path)
     # validDataset=RFFIDataset(txt_path=cfgs.valid_txt_path)
